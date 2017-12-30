@@ -9,30 +9,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
-)
-
-type cmd struct {
-	Type    string  `json:"type"`
-	ID      string  `json:"id"`
-	URI     string  `json:"uri"`
-	Payload payload `json:"payload,omitempty"`
-}
-
-type payload struct {
-	Volume  int    `json:"volume,omitempty"`
-	Message string `json:"message,omitempty"`
-	ID      string `json:"id,omitempty"`
-	Mute    bool   `json:"mute,omitempty"`
-}
-
-var (
-	dir, dirErr = filepath.Abs(filepath.Dir(os.Args[0]))
 )
 
 // generate uniq id for each call
@@ -47,7 +27,7 @@ func getID(strlen int) string {
 	return string(result)
 }
 
-func command(addr net.IP, cmd *cmd, data *LGPair) {
+func command(addr net.IP, cmd *cmd, data *LGPair) []byte {
 	client := connect(addr, data)
 	defer client.Close()
 
@@ -63,9 +43,9 @@ func command(addr net.IP, cmd *cmd, data *LGPair) {
 	_, message, err := client.ReadMessage()
 	if err != nil {
 		log.Println("Error while reading the message from server:", err)
-		return
 	}
 	log.Printf("Response from WebOS: %s", message)
+	return message
 }
 
 // Initialize websocket on each command call
@@ -88,18 +68,56 @@ func main() {
 	password := flag.String("password", "password", "REST API password")
 	flag.Parse()
 
-	pair := &LGPair{}
-
-	// get absolute location
-	if dirErr != nil {
-		log.Fatal(dirErr)
+	// Prepare payload for initial
+	data := LGPair{
+		ForcePairing: false,
+		PairingType:  "PROMPT",
+	}
+	data.Manifest.Signed.Permissions = []string{
+		"TEST_SECURE",
+		"CONTROL_INPUT_TEXT",
+		"CONTROL_MOUSE_AND_KEYBOARD",
+		"READ_INSTALLED_APPS",
+		"READ_LGE_SDX",
+		"READ_NOTIFICATIONS",
+		"SEARCH",
+		"WRITE_SETTINGS",
+		"WRITE_NOTIFICATION_ALERT",
+		"CONTROL_POWER",
+		"READ_CURRENT_CHANNEL",
+		"READ_RUNNING_APPS",
+		"READ_UPDATE_INFO",
+		"UPDATE_FROM_REMOTE_APP",
+		"READ_LGE_TV_INPUT_EVENTS",
+		"READ_TV_CURRENT_TIME",
+	}
+	data.Manifest.Permissions = []string{
+		"LAUNCH",
+		"LAUNCH_WEBAPP",
+		"APP_TO_APP",
+		"CLOSE",
+		"TEST_OPEN",
+		"TEST_PROTECTED",
+		"CONTROL_AUDIO",
+		"CONTROL_DISPLAY",
+		"CONTROL_INPUT_JOYSTICK",
+		"CONTROL_INPUT_MEDIA_RECORDING",
+		"CONTROL_INPUT_MEDIA_PLAYBACK",
+		"CONTROL_INPUT_TV",
+		"CONTROL_POWER",
+		"READ_APP_STATUS",
+		"READ_CURRENT_CHANNEL",
+		"READ_INPUT_DEVICE_LIST",
+		"READ_NETWORK_STATE",
+		"READ_RUNNING_APPS",
+		"READ_TV_CHANNEL_LIST",
+		"WRITE_NOTIFICATION_TOAST",
+		"READ_POWER_STATE",
+		"READ_COUNTRY_INFO",
 	}
 
-	// Prepare payload for initial
-	data := pair.loadData()
-
 	// Addr of webos device
-	addr := addrDiscovery().IP
+	addr := webosDiscovery()
 
 	http.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		user, pass, _ := req.BasicAuth()
@@ -111,8 +129,8 @@ func main() {
 		/// Parse JSON's POST request
 		decoder := json.NewDecoder(req.Body)
 
-		var p map[string]interface{}
-		err := decoder.Decode(&p)
+		var post map[string]interface{}
+		err := decoder.Decode(&post)
 		if err != nil {
 			log.Println("Can not decode json, ", err)
 			return
@@ -120,42 +138,38 @@ func main() {
 		ssap := fmt.Sprintf("ssap://%v", req.URL.Path[1:])
 		cmd := &cmd{Type: "request", ID: getID(32), URI: ssap}
 
-		// handle parameters for ( in the order ):
-		// - audio/setVolume
-		// - system.launcher/launch
-		// - audio/setMute
-		// - system.notifications/createToast
-
-		for key := range p {
+		for key := range post {
 			switch key {
 			case "volume":
-				if volume, ok := p[key].(float64); ok {
-					cmd.Payload = payload{Volume: int(volume)}
+				if volume, ok := post[key].(float64); ok {
+					cmd.Payload.Volume = int(volume)
 				}
 			case "id":
-				if id, ok := p[key].(string); ok {
-					cmd.Payload = payload{ID: strings.ToLower(id)}
+				if id, ok := post[key].(string); ok {
+					cmd.URI = "ssap://com.webos.applicationManager/listLaunchPoints"
+					apps := &Receiver{}
+					json.Unmarshal(command(addr.IP, cmd, &data), apps)
+					for _, app := range apps.Payload.LaunchPoints {
+						if strings.Contains(strings.ToLower(app.Title), strings.ToLower(id)) {
+							cmd.Payload.ID = app.ID
+							cmd.URI = ssap
+							break
+						}
+					}
 				}
 			case "mute":
-				if mute, ok := p[key].(bool); ok {
-					cmd.Payload = payload{Mute: mute}
+				if mute, ok := post[key].(bool); ok {
+					cmd.Payload.Mute = mute
 				}
 			case "message":
-				if message, ok := p[key].(string); ok {
-					cmd.Payload = payload{Message: message}
+				if message, ok := post[key].(string); ok {
+					cmd.Payload.Message = message
 				}
 			}
 		}
-		command(addr, cmd, &data)
+		command(addr.IP, cmd, &data)
 	})
 
-	/*
-		$ openssl genrsa -out server.key 2048
-		or
-		$ openssl ecparam -genkey -name secp384r1 -out server.key
-
-		$ openssl req -new -x509 -sha256 -key server.key -out server.crt -days 3650
-	*/
 	err := http.ListenAndServeTLS(":8888", "server.crt", "server.key", nil)
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)

@@ -5,76 +5,27 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
-	"os"
 	"os/user"
 	"path"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-// LGPair - json used to establish pairing with LG TV
-type LGPair struct {
-	ForcePairing bool   `json:"forcePairing"`
-	PairingType  string `json:"pairingType"`
-	ClientKey    string `json:"client-key"`
-	Manifest     `json:"manifest"`
-}
-
-// Manifest -
-type Manifest struct {
-	ManifestVersion uint64       `json:"manifestVersion"`
-	AppVersion      string       `json:"appVersion"`
-	Permissions     []string     `json:"permissions"`
-	Signatures      []Signatures `json:"signatures"`
-	Signed          `json:"signed"`
-}
-
-// Signed -
-type Signed struct {
-	Created              string            `json:"created"`
-	AppID                string            `json:"appId"`
-	VendorID             string            `json:"vendorId"`
-	LocalizedAppNames    map[string]string `json:"localizedAppNames"`
-	LocalizedVendorNames map[string]string `json:"localizedVendorNames"`
-	Permissions          []string          `json:"permissions"`
-	Serial               string            `json:"serial"`
-}
-
-// Signatures -
-type Signatures struct {
-	SignatureVersion uint64 `json:"signatureVersion"`
-	Signature        string `json:"signature"`
-}
-
-// Register - used for initial registration with the WebOS
-type Register struct {
-	Type    string  `json:"type"`
-	PayLoad *LGPair `json:"payload"`
-}
-
-// Receiver - keep messages received back from LG websocket
-type Receiver struct {
-	Type    string                 `json:"type"`
-	Error   string                 `json:"error,omitempty"`
-	PayLoad map[string]interface{} `json:"payload,omitempy"`
-}
-
 func register(client *websocket.Conn, data *LGPair) {
-	register := Register{
-		Type:    "register",
-		PayLoad: data,
-	}
 	receiver := Receiver{}
 
-	message, err := json.Marshal(register)
+	message, err := json.Marshal(Register{
+		Type:    "register",
+		PayLoad: data,
+	})
 	if err != nil {
 		log.Fatal(err.Error())
 	}
 
 	if data.ClientKey == "" {
+		log.Println("Requesting pairing...")
 		usr, _ := user.Current()
 		webosFile := path.Join(usr.HomeDir, ".webos")
 		dat, err := ioutil.ReadFile(webosFile)
@@ -94,7 +45,7 @@ func register(client *websocket.Conn, data *LGPair) {
 				if receiver.Type == "registered" {
 					ioutil.WriteFile(
 						path.Join(webosFile),
-						[]byte(receiver.PayLoad["client-key"].(string)),
+						[]byte(receiver.Payload.ClientKey),
 						0644)
 					log.Println("Paired")
 				}
@@ -121,7 +72,7 @@ func register(client *websocket.Conn, data *LGPair) {
 	}
 }
 
-func addrDiscovery() (addr *net.UDPAddr) {
+func webosDiscovery() (addr *net.UDPAddr) {
 	destination := &net.UDPAddr{
 		IP:   net.ParseIP("239.255.255.250"),
 		Port: 1900,
@@ -176,27 +127,4 @@ func addrDiscovery() (addr *net.UDPAddr) {
 			}
 		}
 	}
-}
-
-func (pair LGPair) loadData() LGPair {
-	dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	raw, err := ioutil.ReadFile(path.Join(dir, "./pairing.json"))
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-	json.Unmarshal(raw, &pair)
-	return pair
-}
-
-func (pair LGPair) toJSON() string {
-	bytes, err := json.Marshal(pair.loadData())
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-
-	return string(bytes)
 }
