@@ -25,12 +25,12 @@ func register(client *websocket.Conn, data *LGPair) {
 	}
 
 	if data.ClientKey == "" {
-		log.Println("Requesting pairing...")
 		usr, _ := user.Current()
 		webosFile := path.Join(usr.HomeDir, ".webos")
 		dat, err := ioutil.ReadFile(webosFile)
 		if err != nil {
 			log.Println("Requesting pairing with WebOS")
+			log.Println("Payload: ", string(message[:]))
 			client.WriteMessage(websocket.TextMessage, message)
 
 			// Wait till user approve initial pairing
