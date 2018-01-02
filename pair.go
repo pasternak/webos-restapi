@@ -48,6 +48,7 @@ func register(client *websocket.Conn, data *LGPair) {
 						[]byte(receiver.Payload.ClientKey),
 						0644)
 					log.Println("Paired")
+					break
 				}
 			}
 		} else {
